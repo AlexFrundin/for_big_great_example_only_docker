@@ -1,0 +1,407 @@
+version: '2'
+
+services:
+
+  backend-db:
+    image: fltx/database:develop
+    #    image: fltx/database:release-v1.2
+
+    environment:
+      MYSQL_LOAD_DATA: backend
+      MYSQL_LOAD_TEST_DATA: "yes"
+      #      MYSQL_RANDOM_ROOT_PASSWORD: "yes"
+      MYSQL_ROOT_PASSWORD: "secret"
+      MYSQL_DATABASE: yourdatabasename
+      MYSQL_USER: yourdatabaseuser
+      MYSQL_PASSWORD: somesecretpassword
+    volumes:
+      - backend-mysql-data:/var/lib/mysql
+    ports:
+      - "8119:3306"
+
+  backend-redis:
+    image: redis:latest
+    ports:
+      - "8118:6379"
+
+  backend-clickhouse:
+    environment:
+      CLICKHOUSE_DEFAULT_PASS: supersecretpass
+      CLICKHOUSE_READONLY_PASS: notsosecretpass
+      MYSQL_HOST: backend-db
+      MYSQL_PORT: 3306
+      MYSQL_DATABASE: yourdatabasename
+      MYSQL_USER: yourdatabaseuser
+      MYSQL_PASSWORD: somesecretpassword
+    image: fltx/leads-market-clickhouse:develop
+    ports:
+      - 8123:8123
+      - 8124:8124
+
+  distributor-db:
+    image: fltx/database:develop
+    environment:
+      #      MYSQL_RANDOM_ROOT_PASSWORD: "yes"
+      MYSQL_ROOT_PASSWORD: "secret"
+      MYSQL_DATABASE: yourdatabasename
+      MYSQL_USER: yourdatabaseuser
+      MYSQL_PASSWORD: somesecretpassword
+    ports:
+      - "8129:3306"
+
+  distributor-redis:
+    image: redis:latest
+    ports:
+      - "6379:6379"
+
+  distributor-rabbitmq:
+    image: rabbitmq:3-management
+    hostname: "distributor-rabbitmq"
+    environment:
+      RABBITMQ_ERLANG_COOKIE: "SWQOKODSQALRPCLNMEQG"
+      RABBITMQ_DEFAULT_USER: "rabbitmq"
+      RABBITMQ_DEFAULT_PASS: "rabbitmq"
+      RABBITMQ_DEFAULT_VHOST: "/"
+    labels:
+      NAME: "distributor-rabbitmq"
+    ports:
+      - "15672:15672"
+      - "5672:5672"
+
+  nsqlookupd:
+    image: nsqio/nsq
+    command: /nsqlookupd
+    depends_on:
+      - nsqd1
+    ports:
+      - 4160:4160
+      - 4161:4161
+
+  nsqd1:
+    image: nsqio/nsq
+    command: /nsqd --lookupd-tcp-address=nsqlookupd:4160 --data-path=/data
+    ports:
+      - 4150:4150
+      - 4151:4151
+    volumes:
+      - nsq-nsqd1:/data
+
+  nsq_to_http1:
+    image: nsqio/nsq
+    depends_on:
+      - nsqlookupd
+    command: /nsq_to_http --lookupd-http-address=nsqlookupd:4161 -channel $${CHANNEL:-"notify_disributor"} -topic $${TOPIC:-"notify-distributor-lead-created"} -post $${DISTRIBUTOR_URL:-"http://distributor_debug:8005/api/lead"} -content-type application/json --consumer-opt=max_attempts,1000 --http-client-request-timeout=60s --http-client-connect-timeout=30s
+
+  nsqd2:
+    image: nsqio/nsq
+    command: /nsqd --lookupd-tcp-address=nsqlookupd:4160 --data-path=/data
+    ports:
+      - 4152:4150
+      - 4153:4151
+    volumes:
+      - nsq-nsqd2:/data
+
+  nsqadmin:
+    image: nsqio/nsq
+    command: /nsqadmin --lookupd-http-address=nsqlookupd:4161
+    depends_on:
+      - nsqlookupd
+    ports:
+      - 4171:4171
+
+#   mockdb:
+#     image: mysql:5
+#     environment:
+#       MYSQL_RANDOM_ROOT_PASSWORD: "yes"
+#       MYSQL_DATABASE: yourdatabasename
+#       MYSQL_USER: yourdatabaseuser
+#       MYSQL_PASSWORD: somesecretpassword
+#       TMPDIR: /var/tmp
+#     ports:
+#       - 3308:3306
+# # внес изменения
+#   brandmock: # Mock API service
+#     restart: always
+#     depends_on:
+#       - mockdb
+#     # image: fltx/brandmock:master
+#     build: ./brandmock
+#     environment:
+#       MYSQL_HOST: mockdb
+#       MYSQL_DATABASE: yourdatabasename
+#       MYSQL_USER: yourdatabaseuser
+#       MYSQL_PASSWORD: somesecretpassword
+#       DEBUG: 0
+#     ports:
+#       - "8140:80"
+
+  frontend:
+    image: fltx/leads-market-admin-frontend:master
+    #    image: fltx/leads-market-admin-frontend:release-v1.2
+    environment:
+      NODE_ENV: "localhost"
+      BACKEND_HOST: "localhost"
+      BACKEND_PORT: "8110"
+      #  window.BACKEND_PORT = 8110, thanks!
+    ports:
+      - "8150:80"
+
+  backend:
+    # depends_on:
+      # - backend-db
+      # - backend-redis
+      # - backend-clickhouse
+    # image: fltx/leads-market-backend:feature-roles
+    # image: fltx/leads-market-backend:feature-funnles
+    # image: fltx/leads-market-backend:feature-mugrate-orm
+    #    image: fltx/leads-market-backend:release-v1.2
+    #    image: fltx/leads-market-backend:feature-resend-traffic-to-brand
+    #    image: fltx/leads-market-backend:feature-24-hul-loop-an-2980
+    #    image: fltx/leads-market-backend:feature-post-monitor-changes
+    image: fltx/leads-market-backend:master
+    #    image: fltx/leads-market-backend:hotfix-clickhouse-orm
+    environment:
+      #      NODE_ENV: prod  # development
+      #      LOG_QUERIES: 'true'
+      #      DEBUG: '*'
+      NODE_ENV: development
+      FIXTURE_RUN: 0
+      MYSQL_HOST: backend-db
+      MYSQL_DATABASE: yourdatabasename
+      MYSQL_USER: yourdatabaseuser
+      MYSQL_PASSWORD: somesecretpassword
+      DBHOSTNAME: backend-db
+      #      DISTRIBUTOR_URL: http://distributor:8005
+      REDIS_URL: redis://backend-redis:6379
+      CLICKHOUSE_ADDR: backend-clickhouse
+      CLICKHOUSE_DEFAULT_PASS: supersecretpass
+      NSQ_READER_BROKER_ADDRESSES: nsqlookupd:4161
+      NSQ_WRITER_DAEMON_ADDRESSES: nsqd1:4150
+      CREACDN_PUBLIC_URL: http://172.16.7.87:10200
+      UNILANDING_PUBLIC_URL: https://justanotherhosting.club
+      LOGIN_TOTP: 0
+      PORT: 10010
+      INSECURE_INSTANCE: 2
+      CLUSTER_CPU_COUNT: 1
+      #      CLUSTER_CPU_COUNT: 4
+      RECAPTCHA_DISABLE: 1
+      CLUSTER_MEMORY_LIMIT: 1024M
+      NODE_PATH: ./api/services
+      #      DEFAULT_TRUST_LEVEL: internal
+      DEFAULT_TRUST_LEVEL: external
+      DISTRIBUTOR_URL: http://distributor_debug:8005
+      TOKEN_SECRET: ggfdgfrewrwerwdgrwer324fsdfsd32ewfdsfdsf345ertfgg333
+      # внес изменения
+      INTEGRATOR_URL: http://localhost:8080
+      APPLY_MIGRATIONS: "yes"
+    ports:
+      - "8110:10010"
+
+  redis:
+    image: redis:latest
+
+  mongodb:
+    environment:
+      - MONGO_INITDB_DATABASE=unilanding
+      - MONGO_INITDB_ROOT_USERNAME=admin
+      - MONGO_INITDB_ROOT_PASSWORD=placeyoursecretpasswordhere
+    image: mongo
+    volumes:
+      - unilanding-mongodb:/data/db
+      - unilanding-mongodb-configdb:/data/configdb
+# внес изменения
+  unilanding:
+    environment:
+      - MONGO_URI=mongodb://admin:placeyoursecretpasswordhere@mongodb/unilanding?authSource=admin
+      - NODE_ENV=production
+      - NODE_PATH=./server/modules
+      #      - REQUEST_PROXY=http://user:pass@replace-with-your-proxy.example.com
+      - INTEGRATOR_URL=http://localhost:8080
+      - PORT=8080
+      # - INTEGRATOR_URL=http://192.168.100.1:8080
+      - CREACDN_PUBLIC_URL=http://172.16.7.87:10200
+      - REDIS_URL=redis://redis:6379
+    image: fltx/unilanding:master
+    #    image: fltx/unilanding:commit-1f11f11
+    #    build:
+    #      context: .
+    ports:
+      - 8081:8080
+    depends_on:
+      - mongodb
+      - redis
+    restart: unless-stopped
+# внес изменения
+  distributor-beat:
+    image: fltx/distributor:latest
+    environment:
+      CONTAINER_RUN_MODE: beat
+      RUN_ENVIRONMENT: "local"
+      LOG_LEVEL: "DEBUG"
+      BACKEND_URL: http://backend:10010
+      INTEGRATOR_URL: http://localhost:8080
+
+      BRAND_API_HTTP_PROXY: ""
+      BRANDMOCK_SERVER_HOSTNAME: "localhost"
+      BRANDMOCK_SERVER_PORT: 8140
+
+      REDIS_URL: redis://distributor-redis:6379
+      TASK_PROCESS_BACKEND: redis://distributor-redis:6379/3
+      TASK_PROCESS_PROFILER: redis://distributor-redis:6379/4
+
+      CELERY_LOG_LEVEL: debug
+      CELERY_BROKER_URL: amqp://rabbitmq:rabbitmq@distributor-rabbitmq:5672//
+      CELERY_RESULT_BACKEND: redis://distributor-redis:6379/1
+      CELERY_REDIS_SCHEDULER_URL: redis://distributor-redis:6379/2
+      CELERY_REDIS_SCHEDULER_KEY_PREFIX: "tasks:meta:"
+
+      MYSQL_HOST: distributor-db
+      MYSQL_DATABASE: yourdatabasename
+      MYSQL_USER: yourdatabaseuser
+      MYSQL_PASSWORD: somesecretpassword
+
+      BACKEND_USERNAME: distributor@filiatix.com
+      BACKEND_PASSWORD: thisisdistributor
+    depends_on:
+      - distributor-db
+
+  distributor-flower:
+    image: fltx/distributor:latest
+    environment:
+      CONTAINER_RUN_MODE: flower
+      RUN_ENVIRONMENT: "local"
+      LOG_LEVEL: "DEBUG"
+      BACKEND_URL: http://backend:10010
+      INTEGRATOR_URL: http://localhost:8080
+
+      BRAND_API_HTTP_PROXY: ""
+      BRANDMOCK_SERVER_HOSTNAME: "localhost"
+      BRANDMOCK_SERVER_PORT: 8140
+
+      REDIS_URL: redis://distributor-redis:6379
+      TASK_PROCESS_BACKEND: redis://distributor-redis:6379/3
+      TASK_PROCESS_PROFILER: redis://distributor-redis:6379/4
+
+      CELERY_LOG_LEVEL: debug
+      CELERY_BROKER_URL: amqp://rabbitmq:rabbitmq@distributor-rabbitmq:5672//
+      CELERY_RESULT_BACKEND: redis://distributor-redis:6379/1
+      CELERY_REDIS_SCHEDULER_URL: redis://distributor-redis:6379/2
+      CELERY_REDIS_SCHEDULER_KEY_PREFIX: "tasks:meta:"
+
+      MYSQL_HOST: distributor-db
+      MYSQL_DATABASE: yourdatabasename
+      MYSQL_USER: yourdatabaseuser
+      MYSQL_PASSWORD: somesecretpassword
+
+      BACKEND_USERNAME: distributor@filiatix.com
+      BACKEND_PASSWORD: thisisdistributor
+    depends_on:
+      - distributor-db
+
+  distributor-workerfetch:
+    image: fltx/distributor:latest
+    environment:
+      CONTAINER_RUN_MODE: workerfetch
+      RUN_ENVIRONMENT: "local"
+      LOG_LEVEL: "DEBUG"
+      BACKEND_URL: http://backend:10010
+      INTEGRATOR_URL: http://localhost:8080
+
+      BRAND_API_HTTP_PROXY: ""
+      BRANDMOCK_SERVER_HOSTNAME: "localhost"
+      BRANDMOCK_SERVER_PORT: 8140
+
+      REDIS_URL: redis://distributor-redis:6379
+      TASK_PROCESS_BACKEND: redis://distributor-redis:6379/3
+      TASK_PROCESS_PROFILER: redis://distributor-redis:6379/4
+
+      CELERY_LOG_LEVEL: debug
+      CELERY_BROKER_URL: amqp://rabbitmq:rabbitmq@distributor-rabbitmq:5672//
+      CELERY_RESULT_BACKEND: redis://distributor-redis:6379/1
+      CELERY_REDIS_SCHEDULER_URL: redis://distributor-redis:6379/2
+      CELERY_REDIS_SCHEDULER_KEY_PREFIX: "tasks:meta:"
+
+      MYSQL_HOST: distributor-db
+      MYSQL_DATABASE: yourdatabasename
+      MYSQL_USER: yourdatabaseuser
+      MYSQL_PASSWORD: somesecretpassword
+
+      BACKEND_USERNAME: distributor@filiatix.com
+      BACKEND_PASSWORD: thisisdistributor
+    depends_on:
+      - distributor-db
+
+  distributor-workermonitor:
+    image: fltx/distributor:latest
+    environment:
+      CONTAINER_RUN_MODE: workermonitor
+      RUN_ENVIRONMENT: "local"
+      LOG_LEVEL: "DEBUG"
+      BACKEND_URL: http://backend:10010
+      INTEGRATOR_URL: http://localhost:8080
+
+      BRAND_API_HTTP_PROXY: ""
+      BRANDMOCK_SERVER_HOSTNAME: "localhost"
+      BRANDMOCK_SERVER_PORT: 8140
+
+      REDIS_URL: redis://distributor-redis:6379
+      TASK_PROCESS_BACKEND: redis://distributor-redis:6379/3
+      TASK_PROCESS_PROFILER: redis://distributor-redis:6379/4
+
+      CELERY_LOG_LEVEL: debug
+      CELERY_BROKER_URL: amqp://rabbitmq:rabbitmq@distributor-rabbitmq:5672//
+      CELERY_RESULT_BACKEND: redis://distributor-redis:6379/1
+      CELERY_REDIS_SCHEDULER_URL: redis://distributor-redis:6379/2
+      CELERY_REDIS_SCHEDULER_KEY_PREFIX: "tasks:meta:"
+
+      MYSQL_HOST: distributor-db
+      MYSQL_DATABASE: yourdatabasename
+      MYSQL_USER: yourdatabaseuser
+      MYSQL_PASSWORD: somesecretpassword
+
+      BACKEND_USERNAME: distributor@filiatix.com
+      BACKEND_PASSWORD: thisisdistributor
+    depends_on:
+      - distributor-db
+
+  distributor:
+    image: fltx/distributor:latest
+    environment:
+      CONTAINER_RUN_MODE: app
+      RUN_ENVIRONMENT: "local"
+      LOG_LEVEL: "DEBUG"
+      BACKEND_URL: http://backend:10010
+      INTEGRATOR_URL: http://localhost:8080
+
+      BRAND_API_HTTP_PROXY: ""
+      BRANDMOCK_SERVER_HOSTNAME: "localhost"
+      BRANDMOCK_SERVER_PORT: 8140
+
+      REDIS_URL: redis://distributor-redis:6379
+      TASK_PROCESS_BACKEND: redis://distributor-redis:6379/3
+      TASK_PROCESS_PROFILER: redis://distributor-redis:6379/4
+
+      CELERY_LOG_LEVEL: debug
+      CELERY_BROKER_URL: amqp://rabbitmq:rabbitmq@distributor-rabbitmq:5672//
+      CELERY_RESULT_BACKEND: redis://distributor-redis:6379/1
+      CELERY_REDIS_SCHEDULER_URL: redis://distributor-redis:6379/2
+      CELERY_REDIS_SCHEDULER_KEY_PREFIX: "tasks:meta:"
+
+      MYSQL_HOST: distributor-db
+      MYSQL_DATABASE: yourdatabasename
+      MYSQL_USER: yourdatabaseuser
+      MYSQL_PASSWORD: somesecretpassword
+
+      BACKEND_USERNAME: distributor@filiatix.com
+      BACKEND_PASSWORD: thisisdistributor
+    ports:
+      - "8120:8005"
+    depends_on:
+      - distributor-db
+
+volumes:
+  backend-mysql-data:
+  nsq-nsqd1:
+  nsq-nsqd2:
+  unilanding-mongodb:
+  unilanding-mongodb-configdb:
